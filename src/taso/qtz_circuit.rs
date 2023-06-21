@@ -44,11 +44,12 @@ fn map_op(opstr: &str) -> Op {
     match opstr {
         "h" => LeafOp::H,
         "rz" => LeafOp::RzF64,
+        "rx" => LeafOp::RxF64,
         "cx" => LeafOp::CX,
         "t" => LeafOp::T,
         "tdg" => LeafOp::Tadj,
         "x" => LeafOp::X,
-        // "add" => LeafOp::AddF64,
+        "add" => LeafOp::AddF64,
         x => panic!("unknown op {x}"),
     }
     .into()
@@ -73,31 +74,38 @@ impl From<RepCircData> for Circuit {
 
         let mut dfg_builder =
             DFGBuilder::new([qb_types.clone(), param_types].concat(), qb_types).unwrap();
-        let param_wires: Vec<_> = dfg_builder.input_wires().skip(meta.n_qb).collect();
+        let mut param_wires: Vec<_> = dfg_builder.input_wires().skip(meta.n_qb).map(Some).collect();
         let mut circ = dfg_builder.as_circuit(dfg_builder.input_wires().take(meta.n_qb).collect());
 
-        for RepCircOp { opstr, inputs, .. } in rc.0 {
+        for RepCircOp {
+            opstr,
+            inputs,
+            outputs,
+        } in rc.0
+        {
             let op = map_op(&opstr);
 
-            let inputs = inputs.into_iter().map(|is| {
+            let hugr_inputs = inputs.into_iter().map(|is| {
                 let (wt, idx) = map_wt(&is);
                 match wt {
                     SimpleType::Linear(LinearType::Qubit) => AppendWire::I(idx),
-                    SimpleType::Classic(ClassicType::F64) => AppendWire::W(param_wires[idx]),
+                    SimpleType::Classic(ClassicType::F64) => AppendWire::W(param_wires[idx].unwrap()),
                     _ => panic!("unexpected wire type."),
                 }
             });
-            circ.append_and_consume(op, inputs).unwrap();
+            let param_outputs = outputs.iter().map(|s| map_wt(s)).filter_map(|(wt, idx)| {
+                matches!(wt, SimpleType::Classic(ClassicType::F64)).then_some(idx)
+            });
+            let hugr_outputs = circ.append_with_outputs(op, hugr_inputs).unwrap();
+            for (idx, wire) in param_outputs.zip(hugr_outputs) {
+                if param_wires.len() <= idx {
+                    param_wires.resize(idx + 1, None);
+                }
+                param_wires[idx] = Some(wire);
+            }
         }
-        // for unused_param in param_wires.into_iter().flatten() {
-        //     circ.discard(*unused_param).unwrap();
-        // }
-        // circ.finish_with_outputs(qubit_wires).unwrap();
-
         let outputs = circ.finish();
         dfg_builder.finish_hugr_with_outputs(outputs).unwrap()
-        // circ.finish();
-        // dfg_builder.finish_hugr().unwrap()
     }
 }
 

@@ -7,9 +7,13 @@ use taso::{load_eccs, taso_mpsc};
 use get_files::ensure_exists;
 
 fn main() {
-    let ecc_name = "Nam_5_3_complete_ECC_set";
-    ensure_exists(ecc_name).unwrap();
-    let eccs = load_eccs(ecc_name);
+    let n_qubits = 2;
+    let max_len = 2;
+    let ecc_name = format!("Nam_{max_len}_{n_qubits}_complete_ECC_set");
+
+    ensure_exists(&ecc_name).unwrap();
+    let eccs = load_eccs(&ecc_name);
+
     println!("Loaded {} ECCs", eccs.len());
     println!(
         "Total {} circuits",

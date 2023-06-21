@@ -97,7 +97,7 @@ where
 {
     // TODO timeout
 
-    // build graph trie (or load it from file)
+    println!("Building matcher trie...");
     let mut matcher = TrieMatcher::new(portmatching::TrieConstruction::Balanced);
     let mut rewrite_rules = HashMap::new();
     let mut all_circs = Vec::new();
@@ -133,6 +133,8 @@ where
                 .filter_map(|(p, c)| p.map(|p| (p, c))),
         );
     }
+    // matcher.optimise(10, 10);
+    println!("Done");
 
     let n_threads = std::cmp::min(max_threads, repset.len());
 
