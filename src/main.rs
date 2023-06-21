@@ -1,10 +1,15 @@
 mod taso;
+mod get_files;
 
 use hugr::hugr::HugrView;
-use taso::{taso_mpsc, rep_sets_from_path};
+
+use taso::{load_eccs, taso_mpsc};
+use get_files::ensure_exists;
 
 fn main() {
-    let eccs = rep_sets_from_path("test_files/h_rz_cxcomplete_ECC_set.json");
+    let ecc_name = "Nam_5_3_complete_ECC_set";
+    ensure_exists(ecc_name).unwrap();
+    let eccs = load_eccs(ecc_name);
     println!("Loaded {} ECCs", eccs.len());
     println!(
         "Total {} circuits",
@@ -12,6 +17,12 @@ fn main() {
     );
 
     // TODO use more useful circuit
-    let circ = eccs[0].rep_circ.clone();
-    taso_mpsc(circ, eccs, 1.001, |c| c.hugr().node_count(), 0, 1);
+    let circ = eccs
+        .iter()
+        .flat_map(|e| e.others.iter())
+        .next()
+        .unwrap()
+        .clone();
+
+    taso_mpsc(circ, eccs, 1.001, |c| c.hugr().node_count(), 0, num_cpus::get() - 1);
 }

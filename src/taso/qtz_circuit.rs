@@ -1,8 +1,6 @@
 use std::collections::HashMap;
 
-use hugr::builder::{
-    AppendWire, DFGBuilder, Dataflow, DataflowHugr,
-};
+use hugr::builder::{AppendWire, DFGBuilder, Dataflow, DataflowHugr};
 use hugr::types::{ClassicType, LinearType, SimpleType};
 use serde::{Deserialize, Serialize};
 

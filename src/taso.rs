@@ -1,11 +1,6 @@
 use hugr::hugr::circuit_hugr::circuit_hash;
 use hugr::hugr::CircuitHugr;
 use hugr::pattern::HugrPattern;
-// use super::{pattern::node_equality, CircFixedStructPattern, PatternRewriter, RewriteGenerator};
-// use crate::circuit::{
-//     circuit::{Circuit, CircuitRewrite},
-//     operation::Op,
-// };
 use portmatching::matcher::many_patterns::PatternMatch;
 use portmatching::{ManyPatternMatcher, Matcher, Pattern, TrieMatcher};
 use priority_queue::PriorityQueue;
@@ -32,8 +27,10 @@ impl RepCircSet {
 
 // TODO refactor so both implementations share more code
 
-pub fn rep_sets_from_path(path: &str) -> Vec<RepCircSet> {
-    let all_circs = qtz_circuit::load_ecc_set(path);
+/// Load a set of ECCs from a file
+pub fn load_eccs(ecc_name: &str) -> Vec<RepCircSet> {
+    let path = format!("data/{ecc_name}.json");
+    let all_circs = qtz_circuit::load_ecc_set(&path);
 
     all_circs
         .into_values()
@@ -51,25 +48,6 @@ pub fn rep_sets_from_path(path: &str) -> Vec<RepCircSet> {
 }
 
 impl RepCircSet {
-    // remove blank wires (up to an optional target or all) and report how many there were
-    // fn remove_blanks(pattern: &mut HugrPattern, target: Option<usize>) -> usize {
-    //     let graph = pattern.graph();
-    //     let mut blankedges: Vec<_> = graph
-    //         .outputs(pattern.get_boundary()[0])
-    //         .into_iter()
-    //         .filter(|e| pattern.edge_endpoints(*e).unwrap().1 == pattern.boundary()[1])
-    //         .collect();
-    //     let nblank = blankedges.len();
-    //     if let Some(target) = target {
-    //         assert!(nblank >= target, "not enough blank wires to reach target.");
-    //         blankedges.drain(target..).for_each(drop);
-    //     }
-    //     for e in blankedges {
-    //         pattern.remove_edge(e);
-    //     }
-
-    //     nblank
-    // }
 
     /// Which patterns can be transformed into which
     fn rewrite_rules(&self) -> HashMap<usize, Vec<usize>> {
@@ -104,40 +82,6 @@ impl RepCircSet {
             circ.remove_wires(&blanks);
         }
     }
-
-    // fn to_rewrites<'s, 'a: 's>(
-    //     &'s self,
-    //     base_circ: &'a Hugr,
-    // ) -> impl Iterator<Item = CircuitRewrite> + 's {
-    //     let mut rep = self.rep_circ.clone();
-    //     // TODO: remove blanks!!
-    //     // let rep_blanks = Self::remove_blanks(&mut rep, None);
-    //     let patterns = self.others.iter().map(|c2| {
-    //         let mut c2 = c2.clone();
-    //         // let blanks = Self::remove_blanks(&mut c2, None);
-    //         (
-    //             CircFixedStructPattern::from_circ(c2, node_equality()),
-    //             &self.rep_circ,
-    //         )
-    //     });
-
-    //     let patterns = patterns.chain(self.others.iter().map(move |c2| {
-    //         (
-    //             CircFixedStructPattern::from_circ(rep.clone(), node_equality()),
-    //             c2,
-    //             rep_blanks,
-    //         )
-    //     }));
-    //     patterns.flat_map(|(pattern, c2, blanks)| {
-    //         PatternRewriter::new(pattern, move |_| {
-    //             let mut replacement = c2.clone();
-    //             Self::remove_blanks(&mut replacement, Some(blanks));
-    //             (replacement, 0.0)
-    //         })
-    //         .into_rewrites(base_circ)
-    //         // pattern_rewriter(pattern, base_circ, )
-    //     })
-    // }
 }
 
 pub fn taso_mpsc<C>(
@@ -190,7 +134,6 @@ where
         );
     }
 
-    // bound the number of threads, chunk up the patterns in to each thread
     let n_threads = std::cmp::min(max_threads, repset.len());
 
     println!("Spinning up {n_threads} threads");
