@@ -1,20 +1,19 @@
 use hugr::hugr::circuit_hugr::circuit_hash;
 use hugr::hugr::{CircuitHugr, HugrView};
 use hugr::ops::OpType;
-use hugr::pattern::{HugrMatcher, HugrPattern};
 use portmatching::matcher::many_patterns::PatternMatch;
-use portmatching::{ManyPatternMatcher, Matcher, Pattern, PatternID};
+use portmatching::{Matcher, Pattern};
 use priority_queue::PriorityQueue;
+use std::collections::HashMap;
 use std::collections::HashSet;
-use std::sync::mpsc::{self, Sender, TryRecvError};
+use std::sync::mpsc::{self, Sender};
 use std::thread::JoinHandle;
 use std::time::Instant;
-use std::{collections::HashMap, sync::Arc};
 use std::{fs, iter, thread};
 
 use serde::{Deserialize, Serialize};
 
-use crate::compile::{load_matcher, load_matcher_or_compile, CompiledTrie};
+use crate::compile::{load_matcher_or_compile, CompiledTrie};
 
 mod qtz_circuit;
 
@@ -113,7 +112,8 @@ pub fn taso_mpsc<C>(
 where
     C: Fn(&CircuitHugr) -> usize + Send + Sync,
 {
-    let matcher = load_matcher_or_compile(ecc_sets).unwrap();
+    let mut matcher = load_matcher_or_compile(ecc_sets).unwrap();
+    // matcher.filter_rewrites(2);
 
     let start_time = Instant::now();
 
@@ -129,6 +129,7 @@ where
     let cin_cost = _rev_cost(&circ);
     let mut cbest_cost = cin_cost;
     let chash = circuit_hash(&circ);
+    println!("new best of size {}", cost(&cbest));
 
     // map of seen circuits, if the circuit has been popped from the queue,
     // holds None
@@ -144,13 +145,13 @@ where
     let mut cycle_inds = (0..n_threads).cycle();
 
     let mut thread_status = vec![ChannelStatus::Empty; n_threads];
+    let mut circ_cnt = 0;
     loop {
         while let Some((hc, priority)) = pq.pop() {
             let seen_circ = dseen
                 .insert(hc, None)
                 .flatten()
                 .expect("seen circ missing.");
-            println!("current size: {}", &seen_circ.node_count());
 
             if priority > cbest_cost {
                 cbest = seen_circ.clone();
@@ -174,6 +175,7 @@ where
                 ChannelMsg::Panic => panic!("A thread panicked"),
             };
             // println!("Main got one");
+            circ_cnt += 1;
             let newchash = circuit_hash(&newc);
             if dseen.contains_key(&newchash) {
                 continue;
@@ -202,6 +204,7 @@ where
         tx.send(ChannelMsg::Empty(0)).unwrap();
         join.join().unwrap();
     }
+    println!("Tried {circ_cnt} circuits");
     println!("END RESULT: {}", cost(&cbest));
     cbest
 }
@@ -278,7 +281,7 @@ fn spawn_pattern_matching_thread(
                             .expect("rewrite failure");
                         if newc.hugr().validate().is_err() {
                             let dir = format!("transforms/");
-                            fs::create_dir_all(&dir);
+                            fs::create_dir_all(&dir).unwrap();
                             fs::write(format!("{dir}/bef.gv"), sent_hugr.hugr().dot_string())
                                 .unwrap();
                             fs::write(format!("{dir}/aft.gv"), newc.hugr().dot_string()).unwrap();
