@@ -74,7 +74,11 @@ impl From<RepCircData> for Circuit {
 
         let mut dfg_builder =
             DFGBuilder::new([qb_types.clone(), param_types].concat(), qb_types).unwrap();
-        let mut param_wires: Vec<_> = dfg_builder.input_wires().skip(meta.n_qb).map(Some).collect();
+        let mut param_wires: Vec<_> = dfg_builder
+            .input_wires()
+            .skip(meta.n_qb)
+            .map(Some)
+            .collect();
         let mut circ = dfg_builder.as_circuit(dfg_builder.input_wires().take(meta.n_qb).collect());
 
         for RepCircOp {
@@ -89,7 +93,9 @@ impl From<RepCircData> for Circuit {
                 let (wt, idx) = map_wt(&is);
                 match wt {
                     SimpleType::Linear(LinearType::Qubit) => AppendWire::I(idx),
-                    SimpleType::Classic(ClassicType::F64) => AppendWire::W(param_wires[idx].unwrap()),
+                    SimpleType::Classic(ClassicType::F64) => {
+                        AppendWire::W(param_wires[idx].unwrap())
+                    }
                     _ => panic!("unexpected wire type."),
                 }
             });
