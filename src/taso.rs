@@ -5,11 +5,11 @@ use portmatching::matcher::many_patterns::PatternMatch;
 use portmatching::{Matcher, Pattern};
 use priority_queue::PriorityQueue;
 use std::collections::HashMap;
-use std::collections::HashSet;
+use std::mem::swap;
 use std::sync::mpsc::{self, Sender};
 use std::thread::JoinHandle;
 use std::time::Instant;
-use std::{fs, iter, thread};
+use std::{iter, thread};
 
 use serde::{Deserialize, Serialize};
 
@@ -19,30 +19,42 @@ mod qtz_circuit;
 
 #[derive(Clone, Serialize, Deserialize)]
 pub struct RepCircSet {
-    pub(crate) rep_circ: CircuitHugr,
-    pub(crate) others: Vec<CircuitHugr>,
-    uuid: String,
+    // First is representative circuit always
+    all_circs: Vec<CircuitHugr>,
 }
 
 impl RepCircSet {
     pub fn new(rep_circ: CircuitHugr, others: Vec<CircuitHugr>) -> Self {
-        let uuid = uuid::Uuid::new_v4().to_string();
-
-        // let path = format!("debug/{uuid}");
-        // fs::create_dir_all(&path).unwrap();
-        // fs::write(format!("{path}/rep.gv"), rep_circ.hugr().dot_string()).unwrap();
-        // for (i, other) in others.iter().enumerate() {
-        //     fs::write(format!("{path}/other_{i}.gv"), other.hugr().dot_string()).unwrap();
-        // }
-
-        Self {
-            rep_circ,
-            others,
-            uuid,
-        }
+        let all_circs = [rep_circ].into_iter().chain(others).collect();
+        Self { all_circs }
     }
+
+    pub fn from_circs(mut all_circs: Vec<CircuitHugr>) -> Self {
+        assert!(!all_circs.is_empty());
+        // The smallest is the rep_circ. Make sure it is first
+        let min_ind = (0..all_circs.len())
+            .min_by_key(|&i| all_circs[i].node_count())
+            .unwrap();
+        if min_ind != 0 {
+            let (first, min) = {
+                let (a, b) = all_circs.split_at_mut(min_ind);
+                (&mut a[0], &mut b[0])
+            };
+            swap(first, min);
+        }
+        Self { all_circs }
+    }
+
     pub fn len(&self) -> usize {
-        self.others.len() + 1
+        self.all_circs.len()
+    }
+
+    pub fn rep_circ(&self) -> &CircuitHugr {
+        &self.all_circs[0]
+    }
+
+    pub fn others(&self) -> &[CircuitHugr] {
+        &self.all_circs[1..]
     }
 }
 
@@ -56,11 +68,8 @@ pub fn load_eccs(ecc_name: &str) -> Vec<RepCircSet> {
     all_circs
         .into_values()
         .map(|all| {
-            // TODO is the rep circ always the first??
-            let mut all = all.into_iter().map(CircuitHugr::new).collect::<Vec<_>>();
-            let rep_circ = all.remove(0);
-
-            RepCircSet::new(rep_circ, all)
+            let all = all.into_iter().map(CircuitHugr::new).collect::<Vec<_>>();
+            RepCircSet::from_circs(all)
         })
         .collect()
 }
@@ -69,35 +78,42 @@ impl RepCircSet {
     /// Which patterns can be transformed into which
     pub fn rewrite_rules(&self) -> HashMap<usize, Vec<usize>> {
         // Rules all -> rep
-        let mut rules: HashMap<_, _> = (1..=self.others.len()).zip(iter::repeat(vec![0])).collect();
+        let mut rules: HashMap<_, _> = (1..self.len()).zip(iter::repeat(vec![0])).collect();
         // Rules rep -> all
-        rules.insert(0, (1..=self.others.len()).collect());
+        rules.insert(0, (1..self.len()).collect());
         rules
     }
 
-    pub fn circuits(&self) -> Vec<&CircuitHugr> {
-        let mut circuits = Vec::with_capacity(self.others.len() + 1);
-        circuits.push(&self.rep_circ);
-        circuits.extend(self.others.iter());
-        circuits
+    pub fn circuits(&self) -> &[CircuitHugr] {
+        self.all_circs.as_slice()
     }
 
-    fn circuits_mut(&mut self) -> Vec<&mut CircuitHugr> {
-        let mut patterns = Vec::with_capacity(self.others.len() + 1);
-        patterns.push(&mut self.rep_circ);
-        patterns.extend(self.others.iter_mut());
-        patterns
-    }
-
-    pub(crate) fn remove_blanks(&mut self) {
-        let mut blanks: HashSet<_> = (0..self.rep_circ.input_ports().count()).collect();
+    /// All the RepCircSets within `this` where blank wires are removed
+    pub(crate) fn no_blank_eccs(&self) -> Vec<RepCircSet> {
+        // The "blank signature" of each circuit
+        let mut blanks2circs = HashMap::new();
         for circ in self.circuits() {
-            let new_blanks = circ.blank_wires();
-            blanks.retain(|b| new_blanks.contains(b));
+            blanks2circs
+                .entry(circ.blank_wires())
+                .or_insert_with(Vec::new)
+                .push(circ);
         }
-        for circ in self.circuits_mut().into_iter() {
-            circ.remove_wires(&blanks);
+
+        let mut sets = Vec::new();
+        for blanks in blanks2circs.keys() {
+            let mut circs = Vec::new();
+            for (other_blanks, other_circs) in blanks2circs.iter() {
+                if other_blanks.clone() & blanks.clone() == *blanks {
+                    circs.extend(other_circs.iter().map(|&circ| {
+                        let mut circ = circ.clone();
+                        circ.remove_wires(&blanks);
+                        circ
+                    }));
+                }
+            }
+            sets.push(RepCircSet::from_circs(circs));
         }
+        sets
     }
 }
 
@@ -113,7 +129,7 @@ where
     C: Fn(&CircuitHugr) -> usize + Send + Sync,
 {
     let mut matcher = load_matcher_or_compile(ecc_sets).unwrap();
-    // matcher.filter_rewrites(2);
+    matcher.filter_rewrites(2);
 
     let start_time = Instant::now();
 
@@ -146,7 +162,16 @@ where
 
     let mut thread_status = vec![ChannelStatus::Empty; n_threads];
     let mut circ_cnt = 0;
+    let mut circ_q = Vec::new();
     loop {
+        while let Ok(received) = r_main.try_recv() {
+            match received {
+                ChannelMsg::Item(newc) => circ_q.push(newc),
+                ChannelMsg::Empty(thread_id) => thread_status[thread_id] = ChannelStatus::Empty,
+                ChannelMsg::Panic => panic!("A thread panicked"),
+            };
+        }
+
         while let Some((hc, priority)) = pq.pop() {
             let seen_circ = dseen
                 .insert(hc, None)
@@ -165,18 +190,14 @@ where
             thread_status[next_ind] = ChannelStatus::NonEmpty;
         }
 
-        while let Ok(received) = r_main.try_recv() {
-            let newc = match received {
-                ChannelMsg::Item(newc) => newc,
-                ChannelMsg::Empty(thread_id) => {
-                    thread_status[thread_id] = ChannelStatus::Empty;
-                    continue;
-                }
-                ChannelMsg::Panic => panic!("A thread panicked"),
-            };
-            // println!("Main got one");
+        let queue_size = circ_q.len();
+        // We compute the hashes in the threads because it's expensive
+        for (newchash, newc) in circ_q.drain(..) {
             circ_cnt += 1;
-            let newchash = circuit_hash(&newc);
+            if circ_cnt % 1000 == 0 {
+                println!("{circ_cnt} circuits...");
+                println!("queue size: {queue_size} circuits");
+            }
             if dseen.contains_key(&newchash) {
                 continue;
             }
@@ -198,13 +219,13 @@ where
         }
     }
 
+    println!("Tried {circ_cnt} circuits");
     println!("Joining");
     for (join, tx) in joins.into_iter().zip(threads_tx.into_iter()) {
         // tell all the threads we're done and join the threads
         tx.send(ChannelMsg::Empty(0)).unwrap();
         join.join().unwrap();
     }
-    println!("Tried {circ_cnt} circuits");
     println!("END RESULT: {}", cost(&cbest));
     cbest
 }
@@ -223,7 +244,7 @@ enum ChannelMsg<M> {
 
 fn spawn_pattern_matching_thread(
     thread_id: usize,
-    tx_main: Sender<ChannelMsg<CircuitHugr>>,
+    tx_main: Sender<ChannelMsg<(usize, CircuitHugr)>>,
     matcher: CompiledTrie,
 ) -> (JoinHandle<()>, Sender<ChannelMsg<CircuitHugr>>) {
     let CompiledTrie {
@@ -246,6 +267,7 @@ fn spawn_pattern_matching_thread(
         };
         loop {
             if let Some(received) = recv(await_main) {
+                await_main = false;
                 let sent_hugr: CircuitHugr = match received {
                     ChannelMsg::Item(c) => c,
                     // We've been terminated
@@ -253,7 +275,11 @@ fn spawn_pattern_matching_thread(
                     ChannelMsg::Panic => panic!("Was told to do so"),
                 };
                 let (g, w) = sent_hugr.hugr().as_weighted_graph();
-                let mut convex_check = sent_hugr.convex_checker(sent_hugr.input_node());
+                let no_pred_nodes = sent_hugr
+                    .hugr()
+                    .children(sent_hugr.hugr().root())
+                    .filter(|&n| sent_hugr.hugr().num_inputs(n) == 0);
+                let mut convex_check = sent_hugr.convex_checker(no_pred_nodes);
                 for &PatternMatch { id, root } in &matcher.find_weighted_matches(g, &w) {
                     let pattern = &all_circs[pattern2circ[&id]];
                     let pattern_root = matcher.get_pattern(id).root();
@@ -280,25 +306,11 @@ fn spawn_pattern_matching_thread(
                             .apply_simple_replacement(replacement)
                             .expect("rewrite failure");
                         if newc.hugr().validate().is_err() {
-                            let dir = format!("transforms/");
-                            fs::create_dir_all(&dir).unwrap();
-                            fs::write(format!("{dir}/bef.gv"), sent_hugr.hugr().dot_string())
-                                .unwrap();
-                            fs::write(format!("{dir}/aft.gv"), newc.hugr().dot_string()).unwrap();
-                            fs::write(
-                                format!("{dir}/pattern.gv"),
-                                all_circs[pattern2circ[&id]].hugr().dot_string(),
-                            )
-                            .unwrap();
-                            fs::write(
-                                format!("{dir}/repl.gv"),
-                                all_circs[new_id].hugr().dot_string(),
-                            )
-                            .unwrap();
                             tx_main.send(ChannelMsg::Panic).unwrap();
                             panic!("invalid replacement");
                         }
-                        tx_main.send(ChannelMsg::Item(newc)).unwrap();
+                        let newchash = circuit_hash(&newc);
+                        tx_main.send(ChannelMsg::Item((newchash, newc))).unwrap();
                     }
                 }
             } else {

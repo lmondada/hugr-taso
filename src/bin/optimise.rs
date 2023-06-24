@@ -16,13 +16,11 @@ fn main() {
         eccs.iter().map(|x| x.len()).sum::<usize>()
     );
 
-    // TODO use more useful circuit
-    let circ = eccs
-        .iter()
-        .flat_map(|e| e.circuits())
-        .max_by_key(|c| c.hugr().node_count())
-        .unwrap()
-        .clone();
+    let circ =
+        serde_json::from_reader(std::fs::File::open("data/nam_circs/grover_5_hugr.json").unwrap())
+            .unwrap();
+
+    // let circ = h_h();
 
     taso_mpsc(
         circ,

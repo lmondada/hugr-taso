@@ -1,4 +1,4 @@
-use std::{collections::HashMap, fs, io, path::Path, time::Instant, mem};
+use std::{collections::HashMap, fs, io, mem, path::Path, time::Instant};
 
 use hugr::{
     hugr::CircuitHugr,
@@ -44,32 +44,39 @@ impl CompiledTrie {
 
 const DATA_DIR: &str = "data/compiled_tries";
 
-pub fn compile_eccs(mut eccs: Vec<RepCircSet>, name: &str) {
+pub fn compile_eccs(eccs: &[RepCircSet], name: &str) {
     println!("Building matcher trie...");
     let start_time = Instant::now();
     let mut matcher = HugrMatcher::new(portmatching::TrieConstruction::Balanced);
     let mut rewrite_rules = HashMap::new();
     let mut all_circs = Vec::new();
+    let mut all_pattern_ids = Vec::new();
     let mut pattern2circ = HashMap::new();
-    for set in eccs.iter_mut() {
-        set.remove_blanks();
-
+    for set in eccs.into_iter().flat_map(|set| set.no_blank_eccs()) {
         let mut pattern_ids = Vec::with_capacity(set.len());
         let mut circ_ids = Vec::with_capacity(set.len());
         for circ in set.circuits() {
-            let mut circ = circ.clone();
-            let hugr = circ.hugr_mut();
+            let circ_ind = (0..all_circs.len())
+                .find(|&i| &all_circs[i] == circ)
+                .unwrap_or_else(|| {
+                    // Add circuit to matcher
+                    let mut circ = circ.clone();
+                    let hugr = circ.hugr_mut();
 
-            // Hack: serialize and deserialize to stabilise Node indices
-            *hugr = serde_json::from_slice(&serde_json::to_vec(hugr).unwrap()).unwrap();
+                    // Hack: serialize and deserialize to stabilise Node indices
+                    *hugr = serde_json::from_slice(&serde_json::to_vec(hugr).unwrap()).unwrap();
 
-            circ_ids.push(all_circs.len());
-            all_circs.push(circ.clone());
-            if let Ok(p) = HugrPattern::from_circuit(circ) {
-                pattern_ids.push(Some(matcher.add_pattern(p.clone())));
-            } else {
-                pattern_ids.push(None);
-            }
+                    let ind = all_circs.len();
+                    all_circs.push(circ.clone());
+                    if let Ok(p) = HugrPattern::from_circuit(circ) {
+                        all_pattern_ids.push(Some(matcher.add_pattern(p.clone())));
+                    } else {
+                        all_pattern_ids.push(None);
+                    }
+                    ind
+                });
+            circ_ids.push(circ_ind);
+            pattern_ids.push(all_pattern_ids[circ_ind]);
         }
         rewrite_rules.extend(
             set.rewrite_rules()
@@ -119,7 +126,7 @@ pub(crate) fn load_matcher_or_compile(name: &str) -> io::Result<CompiledTrie> {
     if !Path::new(&path(name)).exists() {
         ensure_exists(name).unwrap();
         let eccs = load_eccs(name);
-        compile_eccs(eccs, name);
+        compile_eccs(&eccs, name);
     }
     load_matcher(name)
 }

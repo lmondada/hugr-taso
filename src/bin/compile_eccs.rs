@@ -14,5 +14,5 @@ fn main() {
         eccs.iter().map(|x| x.len()).sum::<usize>()
     );
 
-    compile_eccs(eccs, &ecc_name);
+    compile_eccs(&eccs, &ecc_name);
 }
