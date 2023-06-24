@@ -18,6 +18,8 @@ reqwest = { version = "0.11.3", features = ["stream"], optional = true }
 futures-util = { version = "0.3.14", optional = true }
 indicatif = { version = "0.15.0", optional = true }
 tokio = { version = "1.28.2", features = ["full"], optional = true }
+chrono = "0.4.26"
+csv = "1.2.2"
 
 [dependencies.quantinuum-hugr]
 git = "https://github.com/CQCL-DEV/hugr"

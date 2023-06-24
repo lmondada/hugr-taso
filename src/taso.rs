@@ -5,11 +5,12 @@ use portmatching::matcher::many_patterns::PatternMatch;
 use portmatching::{Matcher, Pattern};
 use priority_queue::PriorityQueue;
 use std::collections::HashMap;
+use std::fs::{self, File};
 use std::mem::swap;
 use std::sync::mpsc::{self, Sender};
 use std::thread::JoinHandle;
 use std::time::Instant;
-use std::{iter, thread};
+use std::{io, iter, thread};
 
 use serde::{Deserialize, Serialize};
 
@@ -133,6 +134,9 @@ where
 
     let start_time = Instant::now();
 
+    let file = File::create("best_circs.csv").unwrap();
+    let mut log_cbest = csv::Writer::from_writer(file);
+
     println!("Spinning up {n_threads} threads");
 
     // channel for sending circuits from threads back to main
@@ -145,7 +149,7 @@ where
     let cin_cost = _rev_cost(&circ);
     let mut cbest_cost = cin_cost;
     let chash = circuit_hash(&circ);
-    println!("new best of size {}", cost(&cbest));
+    log_best(cost(&cbest), &mut log_cbest).unwrap();
 
     // map of seen circuits, if the circuit has been popped from the queue,
     // holds None
@@ -164,6 +168,14 @@ where
     let mut circ_cnt = 0;
     let mut circ_q = Vec::new();
     loop {
+        // let recv = |circ_q: &Vec<_>| {
+        //     if pq.is_empty() && circ_q.is_empty() {
+        //         // block as we've got nothing to do
+        //         r_main.recv().ok()
+        //     } else {
+        //         r_main.try_recv().ok()
+        //     }
+        // };
         while let Ok(received) = r_main.try_recv() {
             match received {
                 ChannelMsg::Item(newc) => circ_q.push(newc),
@@ -181,7 +193,7 @@ where
             if priority > cbest_cost {
                 cbest = seen_circ.clone();
                 cbest_cost = priority;
-                println!("new best of size {}", cost(&cbest));
+                log_best(cost(&cbest), &mut log_cbest).unwrap();
             }
             // send the popped circuit to one thread
             let next_ind = cycle_inds.next().expect("cycle never ends");
@@ -227,7 +239,32 @@ where
         join.join().unwrap();
     }
     println!("END RESULT: {}", cost(&cbest));
+    fs::write("final_best_circ.gv", cbest.hugr().dot_string()).unwrap();
+    fs::write(
+        "final_best_circ.json",
+        serde_json::to_vec(cbest.hugr()).unwrap(),
+    )
+    .unwrap();
     cbest
+}
+
+#[derive(serde::Serialize, Debug)]
+struct BestCircSer {
+    circ_len: usize,
+    time: String,
+}
+
+impl BestCircSer {
+    fn new(circ_len: usize) -> Self {
+        let time = chrono::Local::now().to_rfc3339();
+        Self { circ_len, time }
+    }
+}
+
+fn log_best(cbest: usize, wtr: &mut csv::Writer<File>) -> io::Result<()> {
+    println!("new best of size {}", cbest);
+    wtr.serialize(BestCircSer::new(cbest)).unwrap();
+    wtr.flush()
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]

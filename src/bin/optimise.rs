@@ -27,7 +27,8 @@ fn main() {
         &ecc_name,
         1.001,
         |c| c.hugr().node_count(),
-        None,
-        num_cpus::get() - 1,
+        // one hour to start with
+        Some(3600),
+        num_cpus::get(),
     );
 }
