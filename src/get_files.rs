@@ -2,14 +2,18 @@ use std::fs::{self, File};
 use std::io::Write;
 use std::{cmp::min, path::Path};
 
+#[cfg(feature = "ssl")]
 use futures_util::StreamExt;
+#[cfg(feature = "ssl")]
 use indicatif::{ProgressBar, ProgressStyle};
+#[cfg(feature = "ssl")]
 use reqwest::Client;
 
 /// Download ECC from S3
 ///
 /// Adapted from:
 /// https://gist.github.com/giuliano-oliveira/4d11d6b3bb003dba3a1b53f43d81b30d
+#[cfg(feature = "ssl")]
 pub async fn get_ecc_from_s3(client: &Client, ecc_name: &str) -> Result<(), String> {
     let url = format!("https://eccs.eu-central-1.linodeobjects.com/{ecc_name}.json");
 
@@ -50,6 +54,7 @@ pub async fn get_ecc_from_s3(client: &Client, ecc_name: &str) -> Result<(), Stri
 }
 
 /// Ensure that the ECC file exists by downloading it otherwise
+#[cfg(feature = "ssl")]
 #[tokio::main]
 pub async fn ensure_exists(ecc_name: &str) -> Result<(), String> {
     let path = format!("data/{ecc_name}.json");
@@ -57,6 +62,14 @@ pub async fn ensure_exists(ecc_name: &str) -> Result<(), String> {
         fs::create_dir_all("data").or(Err(format!("Failed to create data directory")))?;
         let client = Client::new();
         get_ecc_from_s3(&client, ecc_name).await?;
+    }
+    Ok(())
+}
+#[cfg(not(feature = "ssl"))]
+pub fn ensure_exists(ecc_name: &str) -> Result<(), String> {
+    let path = format!("data/{ecc_name}.json");
+    if !Path::new(&path).exists() {
+        return Err(format!("ECC file not found at '{path}' and SSL feature is not enabled. Please download the ECC file manually and place it at '{path}'", path = path));
     }
     Ok(())
 }
