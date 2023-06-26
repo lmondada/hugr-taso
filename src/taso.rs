@@ -180,7 +180,7 @@ where
         while let Some((&hc, &priority)) = pq.peek_min() {
             let seen_circ = circs_in_pq.get(&hc).unwrap();
 
-            if priority > cbest_cost {
+            if priority < cbest_cost {
                 cbest = seen_circ.clone();
                 cbest_cost = priority;
                 log_best(cbest_cost, &mut log_cbest).unwrap();
