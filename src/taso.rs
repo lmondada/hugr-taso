@@ -188,7 +188,7 @@ where
                 log_best(cost(&cbest), &mut log_cbest).unwrap();
             }
             // try to send to first available thread
-            if let Some(next_ind) = cycle_inds.take(n_threads).find(|next_ind| {
+            if let Some(next_ind) = cycle_inds.by_ref().take(n_threads).find(|next_ind| {
                 let tx = &threads_tx[*next_ind];
                 tx.try_send(ChannelMsg::Item(seen_circ.clone())).is_ok()
             }) {
