@@ -1,10 +1,10 @@
-use std::path::Path;
+#[cfg(feature = "ssl")]
+use std::cmp::min;
 #[cfg(feature = "ssl")]
 use std::fs::{self, File};
 #[cfg(feature = "ssl")]
 use std::io::Write;
-#[cfg(feature = "ssl")]
-use std::cmp::min;
+use std::path::Path;
 
 #[cfg(feature = "ssl")]
 use futures_util::StreamExt;

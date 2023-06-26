@@ -4,7 +4,7 @@ use hugr::ops::OpType;
 use portmatching::matcher::many_patterns::PatternMatch;
 use portmatching::{Matcher, Pattern};
 use priority_queue::PriorityQueue;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs::{self, File};
 use std::mem::swap;
 use std::sync::mpsc::{self, Sender};
@@ -151,10 +151,13 @@ where
     let chash = circuit_hash(&circ);
     log_best(cost(&cbest), &mut log_cbest).unwrap();
 
-    // map of seen circuits, if the circuit has been popped from the queue,
-    // holds None
-    let mut dseen: HashMap<usize, Option<CircuitHugr>> = HashMap::from_iter([(chash, Some(circ))]);
+    // Hash of seen circuits. Dot not store circuits as this map gets huge
+    let mut dseen: HashSet<usize> = HashSet::from_iter([(chash)]);
+    // The circuits being currently processed (this should not get big)
+    let mut circs_in_pq = HashMap::new();
+
     pq.push(chash, cin_cost);
+    circs_in_pq.insert(chash, circ);
 
     // each thread scans for rewrites using all the patterns and
     // sends rewritten circuits back to main
@@ -185,10 +188,7 @@ where
         }
 
         while let Some((hc, priority)) = pq.pop() {
-            let seen_circ = dseen
-                .insert(hc, None)
-                .flatten()
-                .expect("seen circ missing.");
+            let seen_circ = circs_in_pq.remove(&hc).unwrap();
 
             if priority > cbest_cost {
                 cbest = seen_circ.clone();
@@ -208,15 +208,18 @@ where
             circ_cnt += 1;
             if circ_cnt % 1000 == 0 {
                 println!("{circ_cnt} circuits...");
-                println!("queue size: {queue_size} circuits");
+                println!("from thread: {queue_size} new circuits");
+                println!("Total queue size: {} circuits", pq.len());
+                println!("dseen size: {} circuits", dseen.len());
             }
-            if dseen.contains_key(&newchash) {
+            if dseen.contains(&newchash) {
                 continue;
             }
             let newcost = _rev_cost(&newc);
             if gamma * (newcost as f64) > (cbest_cost as f64) {
                 pq.push(newchash, newcost);
-                dseen.insert(newchash, Some(newc));
+                dseen.insert(newchash);
+                circs_in_pq.insert(newchash, newc);
             }
         }
 
