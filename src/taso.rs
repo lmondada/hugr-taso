@@ -3,7 +3,7 @@ use hugr::hugr::{CircuitHugr, HugrView};
 use hugr::ops::OpType;
 use portmatching::matcher::many_patterns::PatternMatch;
 use portmatching::{Matcher, Pattern};
-use priority_queue::PriorityQueue;
+use priority_queue::DoublePriorityQueue;
 use std::collections::{HashMap, HashSet};
 use std::fs::{self, File};
 use std::mem::swap;
@@ -142,14 +142,12 @@ where
     // channel for sending circuits from threads back to main
     let (t_main, r_main) = mpsc::sync_channel(n_threads * 100);
 
-    let _rev_cost = |x: &CircuitHugr| usize::MAX - cost(x);
-
-    let mut pq = PriorityQueue::new();
+    let mut pq = DoublePriorityQueue::new();
     let mut cbest = circ.clone();
-    let cin_cost = _rev_cost(&circ);
+    let cin_cost = cost(&circ);
     let mut cbest_cost = cin_cost;
     let chash = circuit_hash(&circ);
-    log_best(cost(&cbest), &mut log_cbest).unwrap();
+    log_best(cin_cost, &mut log_cbest).unwrap();
 
     // Hash of seen circuits. Dot not store circuits as this map gets huge
     let mut dseen: HashSet<usize> = HashSet::from_iter([(chash)]);
@@ -179,13 +177,13 @@ where
             };
         }
 
-        while let Some((&hc, &priority)) = pq.peek() {
+        while let Some((&hc, &priority)) = pq.peek_min() {
             let seen_circ = circs_in_pq.get(&hc).unwrap();
 
             if priority > cbest_cost {
                 cbest = seen_circ.clone();
                 cbest_cost = priority;
-                log_best(cost(&cbest), &mut log_cbest).unwrap();
+                log_best(cbest_cost, &mut log_cbest).unwrap();
             }
             // try to send to first available thread
             if let Some(next_ind) = cycle_inds.by_ref().take(n_threads).find(|next_ind| {
@@ -193,7 +191,7 @@ where
                 tx.try_send(ChannelMsg::Item(seen_circ.clone())).is_ok()
             }) {
                 thread_status[next_ind] = ChannelStatus::NonEmpty;
-                pq.pop();
+                pq.pop_min();
                 circs_in_pq.remove(&hc);
             } else {
                 // All send channels are full, continue
@@ -214,7 +212,7 @@ where
             if dseen.contains(&newchash) {
                 continue;
             }
-            let newcost = _rev_cost(&newc);
+            let newcost = cost(&newc);
             if gamma * (newcost as f64) > (cbest_cost as f64) {
                 pq.push(newchash, newcost);
                 dseen.insert(newchash);
@@ -229,6 +227,12 @@ where
             if start_time.elapsed().as_secs() > timeout {
                 println!("Timeout");
                 break;
+            }
+        }
+        if pq.len() >= 10000 {
+            // Haircut to keep the queue size manageable
+            while pq.len() > 5000 {
+                pq.pop_max();
             }
         }
     }
