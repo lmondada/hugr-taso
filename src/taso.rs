@@ -7,7 +7,7 @@ use priority_queue::PriorityQueue;
 use std::collections::{HashMap, HashSet};
 use std::fs::{self, File};
 use std::mem::swap;
-use std::sync::mpsc::{self, Sender, SyncSender};
+use std::sync::mpsc::{self, SyncSender};
 use std::thread::JoinHandle;
 use std::time::Instant;
 use std::{io, iter, thread};
@@ -140,7 +140,7 @@ where
     println!("Spinning up {n_threads} threads");
 
     // channel for sending circuits from threads back to main
-    let (t_main, r_main) = mpsc::channel();
+    let (t_main, r_main) = mpsc::sync_channel(n_threads * 100);
 
     let _rev_cost = |x: &CircuitHugr| usize::MAX - cost(x);
 
@@ -288,7 +288,7 @@ enum ChannelMsg<M> {
 
 fn spawn_pattern_matching_thread(
     thread_id: usize,
-    tx_main: Sender<ChannelMsg<(usize, CircuitHugr)>>,
+    tx_main: SyncSender<ChannelMsg<(usize, CircuitHugr)>>,
     matcher: CompiledTrie,
 ) -> (JoinHandle<()>, SyncSender<ChannelMsg<CircuitHugr>>) {
     let CompiledTrie {
