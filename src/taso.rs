@@ -179,7 +179,7 @@ where
             };
         }
 
-        while let Some((hc, priority)) = pq.pop() {
+        while let Some((&hc, &priority)) = pq.peek() {
             let seen_circ = circs_in_pq.remove(&hc).unwrap();
 
             if priority > cbest_cost {
@@ -187,23 +187,17 @@ where
                 cbest_cost = priority;
                 log_best(cost(&cbest), &mut log_cbest).unwrap();
             }
-            // send the popped circuit to first available thread, or block
-            let mut send = |circ: CircuitHugr| {
-                let mut i = 0;
-                loop {
-                    let next_ind = cycle_inds.next().expect("cycle never ends");
-                    let tx = &threads_tx[next_ind];
-                    if tx.try_send(ChannelMsg::Item(circ.clone())).is_ok() {
-                        return next_ind;
-                    } else if i + 1 == n_threads {
-                        tx.send(ChannelMsg::Item(circ)).unwrap();
-                        return next_ind;
-                    }
-                    i += 1;
-                }
-            };
-            let next_ind = send(seen_circ);
-            thread_status[next_ind] = ChannelStatus::NonEmpty;
+            // try to send to first available thread
+            if let Some(next_ind) = cycle_inds.take(n_threads).find(|next_ind| {
+                let tx = &threads_tx[*next_ind];
+                tx.try_send(ChannelMsg::Item(seen_circ.clone())).is_ok()
+            }) {
+                thread_status[next_ind] = ChannelStatus::NonEmpty;
+                pq.pop();
+            } else {
+                // All send channels are full, continue
+                break;
+            }
         }
 
         let queue_size = circ_q.len();
