@@ -184,6 +184,9 @@ where
                 cbest = seen_circ.clone();
                 cbest_cost = priority;
                 log_best(cbest_cost, &mut log_cbest).unwrap();
+                // Now we only care about smaller circuits
+                dseen.clear();
+                dseen.insert(hc);
             }
             // try to send to first available thread
             if let Some(next_ind) = cycle_inds.by_ref().take(n_threads).find(|next_ind| {
