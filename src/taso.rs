@@ -180,7 +180,7 @@ where
         }
 
         while let Some((&hc, &priority)) = pq.peek() {
-            let seen_circ = circs_in_pq.remove(&hc).unwrap();
+            let seen_circ = circs_in_pq.get(&hc).unwrap();
 
             if priority > cbest_cost {
                 cbest = seen_circ.clone();
@@ -194,6 +194,7 @@ where
             }) {
                 thread_status[next_ind] = ChannelStatus::NonEmpty;
                 pq.pop();
+                circs_in_pq.remove(&hc);
             } else {
                 // All send channels are full, continue
                 break;
