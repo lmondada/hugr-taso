@@ -17,7 +17,7 @@ fn main() {
     );
 
     let circ =
-        serde_json::from_reader(std::fs::File::open("data/nam_circs/grover_5_hugr.json").unwrap())
+        serde_json::from_reader(std::fs::File::open("data/nam_circs/adder_8_hugr.json").unwrap())
             .unwrap();
 
     // let circ = h_h();
@@ -25,7 +25,7 @@ fn main() {
     taso_mpsc(
         circ,
         &ecc_name,
-        1.001,
+        1.00001,
         |c| c.hugr().node_count(),
         // one hour to start with
         Some(3600),

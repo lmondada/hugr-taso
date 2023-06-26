@@ -7,7 +7,7 @@ use priority_queue::PriorityQueue;
 use std::collections::{HashMap, HashSet};
 use std::fs::{self, File};
 use std::mem::swap;
-use std::sync::mpsc::{self, Sender};
+use std::sync::mpsc::{self, Sender, SyncSender};
 use std::thread::JoinHandle;
 use std::time::Instant;
 use std::{io, iter, thread};
@@ -171,14 +171,6 @@ where
     let mut circ_cnt = 0;
     let mut circ_q = Vec::new();
     loop {
-        // let recv = |circ_q: &Vec<_>| {
-        //     if pq.is_empty() && circ_q.is_empty() {
-        //         // block as we've got nothing to do
-        //         r_main.recv().ok()
-        //     } else {
-        //         r_main.try_recv().ok()
-        //     }
-        // };
         while let Ok(received) = r_main.try_recv() {
             match received {
                 ChannelMsg::Item(newc) => circ_q.push(newc),
@@ -195,10 +187,22 @@ where
                 cbest_cost = priority;
                 log_best(cost(&cbest), &mut log_cbest).unwrap();
             }
-            // send the popped circuit to one thread
-            let next_ind = cycle_inds.next().expect("cycle never ends");
-            let tx = &threads_tx[next_ind];
-            tx.send(ChannelMsg::Item(seen_circ)).unwrap();
+            // send the popped circuit to first available thread, or block
+            let mut send = |circ: CircuitHugr| {
+                let mut i = 0;
+                loop {
+                    let next_ind = cycle_inds.next().expect("cycle never ends");
+                    let tx = &threads_tx[next_ind];
+                    if tx.try_send(ChannelMsg::Item(circ.clone())).is_ok() {
+                        return next_ind;
+                    } else if i + 1 == n_threads {
+                        tx.send(ChannelMsg::Item(circ)).unwrap();
+                        return next_ind;
+                    }
+                    i += 1;
+                }
+            };
+            let next_ind = send(seen_circ);
             thread_status[next_ind] = ChannelStatus::NonEmpty;
         }
 
@@ -286,7 +290,7 @@ fn spawn_pattern_matching_thread(
     thread_id: usize,
     tx_main: Sender<ChannelMsg<(usize, CircuitHugr)>>,
     matcher: CompiledTrie,
-) -> (JoinHandle<()>, Sender<ChannelMsg<CircuitHugr>>) {
+) -> (JoinHandle<()>, SyncSender<ChannelMsg<CircuitHugr>>) {
     let CompiledTrie {
         matcher,
         rewrite_rules,
@@ -294,7 +298,7 @@ fn spawn_pattern_matching_thread(
         pattern2circ,
     } = matcher;
     // channel for sending circuits to each thread
-    let (tx_thread, rx) = mpsc::channel();
+    let (tx_thread, rx) = mpsc::sync_channel(1000);
 
     let jn = thread::spawn(move || {
         let mut await_main = false;
