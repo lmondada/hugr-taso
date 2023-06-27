@@ -7,10 +7,12 @@ use priority_queue::DoublePriorityQueue;
 use std::collections::{HashMap, HashSet};
 use std::fs::{self, File};
 use std::mem::swap;
-use std::sync::mpsc::{self, SyncSender};
+use std::sync::mpsc::{self, Receiver, SyncSender};
 use std::thread::JoinHandle;
 use std::time::Instant;
 use std::{io, iter, thread};
+
+use itertools::{izip, Itertools};
 
 use serde::{Deserialize, Serialize};
 
@@ -130,7 +132,7 @@ where
     C: Fn(&CircuitHugr) -> usize + Send + Sync,
 {
     let mut matcher = load_matcher_or_compile(ecc_sets).unwrap();
-    matcher.filter_rewrites(2);
+    matcher.filter_rewrites(0);
 
     let start_time = Instant::now();
 
@@ -159,24 +161,16 @@ where
 
     // each thread scans for rewrites using all the patterns and
     // sends rewritten circuits back to main
-    let (joins, threads_tx): (Vec<_>, Vec<_>) = (0..n_threads)
-        .map(|thread_id| spawn_pattern_matching_thread(thread_id, t_main.clone(), matcher.clone()))
-        .unzip();
+    let (joins, threads_tx, signal_new_data): (Vec<_>, Vec<_>, Vec<_>) = (0..n_threads)
+        .map(|_| spawn_pattern_matching_thread(t_main.clone(), matcher.clone()))
+        .multiunzip();
 
     let mut cycle_inds = (0..n_threads).cycle();
+    let mut threads_empty = vec![true; n_threads];
 
-    let mut thread_status = vec![ChannelStatus::Empty; n_threads];
     let mut circ_cnt = 0;
-    let mut circ_q = Vec::new();
     loop {
-        while let Ok(received) = r_main.try_recv() {
-            match received {
-                ChannelMsg::Item(newc) => circ_q.push(newc),
-                ChannelMsg::Empty(thread_id) => thread_status[thread_id] = ChannelStatus::Empty,
-                ChannelMsg::Panic => panic!("A thread panicked"),
-            };
-        }
-
+        // Send data in pq to the threads
         while let Some((&hc, &priority)) = pq.peek_min() {
             let seen_circ = circs_in_pq.get(&hc).unwrap();
 
@@ -191,24 +185,28 @@ where
             // try to send to first available thread
             if let Some(next_ind) = cycle_inds.by_ref().take(n_threads).find(|next_ind| {
                 let tx = &threads_tx[*next_ind];
-                tx.try_send(ChannelMsg::Item(seen_circ.clone())).is_ok()
+                tx.try_send(Some(seen_circ.clone())).is_ok()
             }) {
-                thread_status[next_ind] = ChannelStatus::NonEmpty;
                 pq.pop_min();
                 circs_in_pq.remove(&hc);
+                // Unblock thread if waiting
+                let _ = signal_new_data[next_ind].try_recv();
+                threads_empty[next_ind] = false;
             } else {
                 // All send channels are full, continue
                 break;
             }
         }
 
-        let queue_size = circ_q.len();
+        // Receive data from threads, add to pq
         // We compute the hashes in the threads because it's expensive
-        for (newchash, newc) in circ_q.drain(..) {
+        while let Ok(received) = r_main.try_recv() {
+            let Some((newchash, newc))  = received else {
+                panic!("A thread panicked");
+            };
             circ_cnt += 1;
             if circ_cnt % 1000 == 0 {
                 println!("{circ_cnt} circuits...");
-                println!("from thread: {queue_size} new circuits");
                 println!("Total queue size: {} circuits", pq.len());
                 println!("dseen size: {} circuits", dseen.len());
             }
@@ -216,14 +214,21 @@ where
                 continue;
             }
             let newcost = cost(&newc);
-            if gamma * (newcost as f64) > (cbest_cost as f64) {
+            if (newcost as f64) < gamma * (cbest_cost as f64) {
                 pq.push(newchash, newcost);
                 dseen.insert(newchash);
                 circs_in_pq.insert(newchash, newc);
             }
         }
 
-        if pq.is_empty() && thread_status.iter().all(|&s| s == ChannelStatus::Empty) {
+        // Check if all threads are waiting for new data
+        for (is_waiting, is_empty) in signal_new_data.iter().zip(threads_empty.iter_mut()) {
+            if is_waiting.try_recv().is_ok() {
+                *is_empty = true;
+            }
+        }
+        // If everyone is waiting and we do not have new data, we are done
+        if pq.is_empty() && threads_empty.iter().all(|&x| x) {
             break;
         }
         if let Some(timeout) = timeout {
@@ -242,11 +247,14 @@ where
 
     println!("Tried {circ_cnt} circuits");
     println!("Joining");
-    for (join, tx) in joins.into_iter().zip(threads_tx.into_iter()) {
+
+    for (join, tx, data_tx) in izip!(joins, threads_tx, signal_new_data) {
         // tell all the threads we're done and join the threads
-        tx.send(ChannelMsg::Empty(0)).unwrap();
+        tx.send(None).unwrap();
+        let _ = data_tx.try_recv();
         join.join().unwrap();
     }
+
     println!("END RESULT: {}", cost(&cbest));
     fs::write("final_best_circ.gv", cbest.hugr().dot_string()).unwrap();
     fs::write(
@@ -276,23 +284,14 @@ fn log_best(cbest: usize, wtr: &mut csv::Writer<File>) -> io::Result<()> {
     wtr.flush()
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum ChannelStatus {
-    NonEmpty,
-    Empty,
-}
-
-enum ChannelMsg<M> {
-    Item(M),
-    Empty(usize),
-    Panic,
-}
-
 fn spawn_pattern_matching_thread(
-    thread_id: usize,
-    tx_main: SyncSender<ChannelMsg<(usize, CircuitHugr)>>,
+    tx_main: SyncSender<Option<(usize, CircuitHugr)>>,
     matcher: CompiledTrie,
-) -> (JoinHandle<()>, SyncSender<ChannelMsg<CircuitHugr>>) {
+) -> (
+    JoinHandle<()>,
+    SyncSender<Option<CircuitHugr>>,
+    Receiver<()>,
+) {
     let CompiledTrie {
         matcher,
         rewrite_rules,
@@ -301,24 +300,15 @@ fn spawn_pattern_matching_thread(
     } = matcher;
     // channel for sending circuits to each thread
     let (tx_thread, rx) = mpsc::sync_channel(1000);
+    // A flag to wait until new data
+    let (wait_new_data, signal_new_data) = mpsc::sync_channel(0);
 
     let jn = thread::spawn(move || {
-        let mut await_main = false;
-        let recv = |wait| {
-            if wait {
-                rx.recv().ok()
-            } else {
-                rx.try_recv().ok()
-            }
-        };
         loop {
-            if let Some(received) = recv(await_main) {
-                await_main = false;
-                let sent_hugr: CircuitHugr = match received {
-                    ChannelMsg::Item(c) => c,
-                    // We've been terminated
-                    ChannelMsg::Empty(_) => break,
-                    ChannelMsg::Panic => panic!("Was told to do so"),
+            if let Ok(received) = rx.try_recv() {
+                let Some(sent_hugr): Option<CircuitHugr> = received else {
+                    // Terminate thread
+                    break;
                 };
                 let (g, w) = sent_hugr.hugr().as_weighted_graph();
                 let no_pred_nodes = sent_hugr
@@ -352,105 +342,22 @@ fn spawn_pattern_matching_thread(
                             .apply_simple_replacement(replacement)
                             .expect("rewrite failure");
                         if newc.hugr().validate().is_err() {
-                            tx_main.send(ChannelMsg::Panic).unwrap();
+                            tx_main.send(None).unwrap();
                             panic!("invalid replacement");
                         }
                         let newchash = circuit_hash(&newc);
-                        tx_main.send(ChannelMsg::Item((newchash, newc))).unwrap();
+                        tx_main.send(Some((newchash, newc))).unwrap();
                     }
                 }
             } else {
-                if await_main {
-                    // `recv` failed, an error must have occured
-                    break;
-                }
-                // We are out of work, let main know
-                tx_main.send(ChannelMsg::Empty(thread_id)).unwrap();
-                await_main = true;
+                // We are out of work, wait for new data
+                wait_new_data.send(()).unwrap();
             }
         }
     });
 
-    (jn, tx_thread)
+    (jn, tx_thread, signal_new_data)
 }
-
-// pub fn taso<C>(
-//     circ: Circuit,
-//     repset: Vec<RepCircSet>,
-//     gamma: f64,
-//     cost: C,
-//     _timeout: i64,
-// ) -> Circuit
-// where
-//     C: Fn(&Circuit) -> usize + Send + Sync,
-// {
-//     // TODO timeout
-
-//     let _rev_cost = |x: &Circuit| usize::MAX - cost(x);
-
-//     let mut pq = PriorityQueue::new();
-//     let mut cbest = circ.clone();
-//     let cin_cost = _rev_cost(&circ);
-//     let mut cbest_cost = cin_cost;
-//     let chash = circuit_hash(&circ);
-//     // map of seen circuits, if the circuit has been popped from the queue,
-//     // holds None
-//     let mut dseen: HashMap<usize, Option<Circuit>> = HashMap::from_iter([(chash, Some(circ))]);
-//     pq.push(chash, cin_cost);
-
-//     while let Some((hc, priority)) = pq.pop() {
-//         // remove circuit from map and replace with None
-//         let seen_circ = dseen
-//             .insert(hc, None)
-//             .flatten()
-//             .expect("seen circ missing.");
-//         if priority > cbest_cost {
-//             cbest = seen_circ.clone();
-//             cbest_cost = priority;
-//         }
-//         // par_iter implementation
-
-//         // let pq = Mutex::new(&mut pq);
-//         // tra_patterns.par_iter().for_each(|(pattern, c2)| {
-//         //     pattern_rewriter(pattern.clone(), &hc.0, |_| (c2.clone(), 0.0)).for_each(|rewrite| {
-//         //         let mut newc = hc.0.clone();
-//         //         newc.apply_rewrite(rewrite).expect("rewrite failure");
-//         //         let newchash = circuit_hash(&newc);
-//         //         let mut dseen = dseen.lock().unwrap();
-//         //         if dseen.contains(&newchash) {
-//         //             return;
-//         //         }
-//         //         let newhc = HashCirc(newc);
-//         //         let newcost = _rev_cost(&newhc);
-//         //         if gamma * (newcost as f64) > (cbest_cost as f64) {
-//         //             let mut pq = pq.lock().unwrap();
-//         //             pq.push(newhc, newcost);
-//         //             dseen.insert(newchash);
-//         //         }
-//         //     });
-//         // })
-
-//         // non-parallel implementation:
-
-//         for rp in repset.iter() {
-//             for rewrite in rp.to_rewrites(&seen_circ) {
-//                 // TODO here is where a optimal data-sharing copy would be handy
-//                 let mut newc = seen_circ.clone();
-//                 newc.apply_rewrite(rewrite).expect("rewrite failure");
-//                 let newchash = circuit_hash(&newc);
-//                 if dseen.contains_key(&newchash) {
-//                     continue;
-//                 }
-//                 let newcost = _rev_cost(&newc);
-//                 if gamma * (newcost as f64) > (cbest_cost as f64) {
-//                     pq.push(newchash, newcost);
-//                     dseen.insert(newchash, Some(newc));
-//                 }
-//             }
-//         }
-//     }
-//     cbest
-// }
 
 #[cfg(test)]
 mod tests;
